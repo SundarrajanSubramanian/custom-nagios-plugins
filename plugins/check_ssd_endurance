@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Custom Nagios plugin to check remaining write endurance on SSD's
+
+set -e
+
+usage() {
+  cat <<EOF
+Check remaining write endurance on SSD's
+    Options:
+      -c         Critical threshold as percentage (0-100) (def: 5)
+      -w         Warning threshold as percentage (0-100) (def: 10)
+Usage: $0 -w 10 -c 5
+EOF
+}
+
+# Nagios Exit Codes
+exOk=0
+exWarn=1
+exCrit=2
+exUnkown=3
+
+# Default thresholds
+WARN=10
+CRIT=5
+
+while getopts "c:w:h" ARG; do
+  case $ARG in
+  w) WARN=$OPTARG ;;
+  c) CRIT=$OPTARG ;;
+  h) usage exit ${exUnkown} ;;
+  *) usage exit ${exUnkown} ;;
+  esac
+done
+
+# save output from omreport
+omreport=$(/opt/dell/srvadmin/bin/omreport storage pdisk controller=0)
+
+# exist if no SSD's are found
+if ! grep -q SSD <<< "${omreport}"; then
+  echo "OK: No SSD's are found"
+  exit ${exOk}
+fi
+
+function printAllDiskEndurance () {
+  grep -E -B6 -A2 "Media.*SSD" <<< "${omreport}" | grep -E "^ID" | awk '{ print $NF }' | while read diskId ; do
+    echo -n "Disk ID ${diskId} has remaining endurance "
+    grep -A6 "${diskId}" <<< "${omreport}" | grep Endurance  | awk '{ print $NF }'
+  done
+}
+
+# check if any SSD's are equal or below our defined thresholds
+lowestEndurance=$(grep Endurance <<< "${omreport}" | awk '{sub ("%", ""); print $NF }' | sort -h | head -1 )
+if [[  "${lowestEndurance}" -lt "${CRIT}" ]]; then
+  echo "CRITICAL: SSD remaining write endurance ${lowestEndurance}%"
+  printAllDiskEndurance
+  exit ${exCrit}
+elif [[  "${lowestEndurance}" -lt  "${WARN}" ]]; then
+  echo "WARNING: SSD remaining write endurance ${lowestEndurance}%"
+  printAllDiskEndurance
+  exit ${exWarn}
+else
+  echo "OK: SSD remaining write endurance ${lowestEndurance}%"
+  printAllDiskEndurance
+  exit ${exOk}
+fi
+
+# Should never reach this, if it does, something is wrong.
+echo UNKNOWN: Unknown error
+exit ${exUnkown}
